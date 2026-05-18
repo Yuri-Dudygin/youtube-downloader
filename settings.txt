@@ -1,0 +1,3 @@
+output_path=C:\Path\To\Videos
+mp3_path=C:\Path\To\Music
+subs_path=C:\Path\To\Subtitles
