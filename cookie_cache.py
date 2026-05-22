@@ -45,8 +45,7 @@ def _protect(data):
         CRYPTPROTECT_UI_FORBIDDEN,
         ctypes.byref(out_blob),
     )
-    ctypes.KeepAlive(data_buffer)
-    ctypes.KeepAlive(entropy_buffer)
+    _ = (data_buffer, entropy_buffer)
     if not ok:
         raise ctypes.WinError()
     return _bytes_from_blob(out_blob)
@@ -65,8 +64,7 @@ def _unprotect(data):
         CRYPTPROTECT_UI_FORBIDDEN,
         ctypes.byref(out_blob),
     )
-    ctypes.KeepAlive(data_buffer)
-    ctypes.KeepAlive(entropy_buffer)
+    _ = (data_buffer, entropy_buffer)
     if not ok:
         raise ctypes.WinError()
     return _bytes_from_blob(out_blob)

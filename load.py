@@ -178,11 +178,26 @@ def is_sign_in_error(exc):
     )
 
 
+def is_network_error(exc):
+    text = str(exc).lower()
+    return (
+        "read timed out" in text
+        or "timed out" in text
+        or "unexpected_eof_while_reading" in text
+        or "connection reset" in text
+        or "connection aborted" in text
+        or "ssl" in text and "eof" in text
+        or "giving up after" in text and "retries" in text
+    )
+
+
 def short_error(exc):
     text = str(exc)
     lower = text.lower()
     if is_sign_in_error(exc):
         return "YouTube требует авторизацию или проверку, что пользователь не бот."
+    if is_network_error(exc):
+        return "Сетевая ошибка при скачивании с YouTube/googlevideo. Повтори запуск позже."
     if "could not find" in lower and "cookies database" in lower:
         return "База cookies Chromium не найдена."
     if is_cookie_error(exc):
@@ -259,9 +274,11 @@ def download_video(url, log):
         "noplaylist": True,
         "ffmpeg_location": ffmpeg_exe,
         "logger": YtDlpLogger(log),
-        "socket_timeout": 20,
-        "retries": 3,
-        "fragment_retries": 3,
+        "socket_timeout": 60,
+        "retries": 10,
+        "fragment_retries": 10,
+        "file_access_retries": 5,
+        "http_chunk_size": 10 * 1024 * 1024,
         # Путь к Node.js (лежит в venv через nodejs_wheel_binaries) — нужен
         # для расшифровки nsig challenge от YouTube
         "js_runtimes": {"node": {"path": NODE_EXE}} if os.path.exists(NODE_EXE) else {"node": {}},
@@ -288,14 +305,14 @@ def download_video(url, log):
         attempt = cached_cookie_attempt(log)
         if attempt:
             attempts.append(attempt)
-    attempts.append((
-        "без куки (tv_simply, android_vr)",
-        {"extractor_args_youtube": {"player_client": PLAYER_CLIENTS_NO_COOKIES}},
-    ))
     browser = check_browser_running()
     if browser:
         print_log(log, f"⚠  {browser} запущен — если потребуются куки, закрой браузер.")
     attempts.extend(cookie_attempt(key, name) for key, name in available_cookie_browsers(log))
+    attempts.append((
+        "без куки (tv_simply, android_vr)",
+        {"extractor_args_youtube": {"player_client": PLAYER_CLIENTS_NO_COOKIES}},
+    ))
 
     # Запоминаем mp4-файлы в папке до скачивания
     before = set(
@@ -305,6 +322,8 @@ def download_video(url, log):
 
     print_log(log, f"\nСкачиваю: {url}")
     last_error = None
+    auth_error_seen = False
+    network_error_seen = False
     for i, (label, extra_opts) in enumerate(attempts):
         ydl_opts = dict(base_opts)
         # extractor_args собираем отдельно, чтобы не перетереть базовые
@@ -325,14 +344,21 @@ def download_video(url, log):
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([url])
                 if "cookiesfrombrowser" in ydl_opts:
-                    cookie_cache.save_jar(BASE_DIR, ydl.cookiejar)
-                    log.write("COOKIE CACHE: обновлен из Chromium\n")
+                    try:
+                        cookie_cache.save_jar(BASE_DIR, ydl.cookiejar)
+                        log.write("COOKIE CACHE: обновлен из Chromium\n")
+                    except Exception as e:
+                        log.write(f"COOKIE CACHE SAVE ERROR: {e}\n")
             last_error = None
             break
         except Exception as e:
             last_error = e
             log.write(f"Попытка '{label}' не удалась: {e}\n")
             print(f"  ⚠  '{label}' — {short_error(e)}")
+            if is_network_error(e):
+                network_error_seen = True
+                print_log(log, "  ⚠  Это сетевой сбой во время скачивания, а не проблема cookies. Останавливаю перебор попыток.")
+                break
             if cached_cookiefile and is_sign_in_error(e):
                 cookie_cache.remove_cache(BASE_DIR)
                 log.write("COOKIE CACHE: удален, потому что YouTube отклонил cookies\n")
@@ -340,6 +366,7 @@ def download_video(url, log):
                 # Куки недоступны, следующая попытка (если есть) тоже без куков
                 continue
             if is_sign_in_error(e):
+                auth_error_seen = True
                 print_log(log, "  ⚠  YouTube требует авторизацию. Пробую другой источник cookies.")
                 continue
             # Пробуем следующую попытку — возможно, другой клиент сработает
@@ -351,6 +378,8 @@ def download_video(url, log):
                 except FileNotFoundError:
                     pass
 
+    if last_error is not None and auth_error_seen and not network_error_seen:
+        print_log(log, "  ⚠  Все источники cookies отклонены YouTube. Открой Chromium, заново войди в YouTube, закрой Chromium и повтори запуск.")
     if last_error is not None:
         raise last_error
 
